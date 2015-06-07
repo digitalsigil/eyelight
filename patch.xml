@@ -1,0 +1,29 @@
+<!DOCTYPE patchbay>
+<patchbay version="0.3.12" name="patch">
+ <output-sockets>
+  <socket exclusive="off" client="eyelight" type="jack-audio" name="Output Socket 1">
+   <plug>audio_l</plug>
+   <plug>audio_r</plug>
+  </socket>
+ </output-sockets>
+ <input-sockets>
+  <socket exclusive="off" client="japa" type="jack-audio" name="Input Socket 1">
+   <plug>in_1</plug>
+   <plug>in_2</plug>
+  </socket>
+  <socket exclusive="off" client="jaaa" type="jack-audio" name="Input Socket 2">
+   <plug>in_1</plug>
+   <plug>in_2</plug>
+  </socket>
+  <socket exclusive="off" client="jack-scope-[0-9]+" type="jack-audio" name="Input Socket 3">
+   <plug>in_1</plug>
+  </socket>
+ </input-sockets>
+ <slots/>
+ <cables>
+  <cable output="Output Socket 1" input="Input Socket 1" type="jack-audio"/>
+  <cable output="Output Socket 1" input="Input Socket 2" type="jack-audio"/>
+  <cable output="Output Socket 1" input="Input Socket 3" type="jack-audio"/>
+ </cables>
+</patchbay>
+

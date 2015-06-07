@@ -14,9 +14,6 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
-#define BLOCK_N 20
-#define BLOCK_SMP (1 << 16)
-
 jack_port_t *in_port;
 jack_port_t *out_ports[2];
 jack_default_audio_sample_t ramp = 0.0;
@@ -26,8 +23,16 @@ jack_default_audio_sample_t note_frqs[128];
 
 jack_client_t *client;
 
-double *block[BLOCK_N];
+enum {
+	BlockSampleCount = 1 << 10,
+	BlockCount = 100
+};
 
+struct blocks {
+	float **b;
+	int n;
+	int m;
+} blocks;
 
 static void
 signal_handler(int sig)
@@ -38,56 +43,113 @@ signal_handler(int sig)
 }
 
 static void
-fill_block(float *b, int n)
+fill_random(float *b, int n)
 {
 	static gsl_rng *r = NULL;
-
 	int i;
-
+	float rf;
+	double *d = NULL;
+	
 	if (r == NULL) {
 		gsl_rng_env_setup();
 		r = gsl_rng_alloc(gsl_rng_default);
 	}
 
+	d = malloc(sizeof (*d) * n);
+	if (!d) errx(1, "malloc");
+
 	for (i = 0; i < n; i++)
-		b[i] = 2.6 * (((double) i) / n) * gsl_rng_uniform(r);
-		
-	gsl_fft_halfcomplex_radix2_inverse (b, 1, n);
+		d[i] = 2 * (gsl_rng_uniform(r) - 0.5);
+	//rf = gsl_rng_uniform(r);
+	//for (i = 0; i < n; i++)
+	//	b[i] = sinf((440.0 + rf * 2000 - 1000) * M_PI * 2 * i / n);
+	
+	gsl_fft_halfcomplex_radix2_inverse (d, 1, n);
+
+	for (i = 0; i < n; i++)
+		b[i] = d[i];
+	
+	free(d);
+}
+
+static struct blocks
+create_blocks(int m, int n)
+{
+	int i;
+	struct blocks b;
+	
+	b.m = m;
+	b.n = n;
+	b.b = malloc (sizeof (*b.b) * m);
+	if (!b.b) errx(1, "malloc");
+	
+	for (i = 0; i < m; i++) {
+		b.b[i] = malloc(sizeof (**b.b) * n);
+		if (b.b[i] == NULL) errx(1, "malloc");
+		fill_random(b.b[i], n);
+	}
+
+	return b;
+}
+
+static int
+block_fade(float *out, int i0, int i1, int o0, int o1, int n)
+{
+	double a;
+	int i;
+	
+	float *b0 = blocks.b[i0] + o0;
+	float *b1 = blocks.b[i1] + o1;
+
+	if (n > blocks.n - o0) n = blocks.n - o0;
+	if (n > blocks.n - o1) n = blocks.n - o1;
+
+	for (i = 0; i < n; i++) {
+		a = M_PI * o0 / blocks.n;
+		out[i] = sin(a) * b0[i] + cos(a) * b1[i];
+	}
+
+	return n;
 }
 
 static void
-generate_blocks(void)
+blockone_fill(float *l, float *r, int n)
 {
+	static int o = 0;
 	int i;
 	
-	for (i = 0; i < BLOCK_N; i++) {
-		block[i] = malloc(sizeof (**block) * BLOCK_SMP);
-		if (block[i] == NULL)
-			errx(1, "malloc failed");
-		fill_block(block[i], BLOCK_SMP);
+	for (i = 0; i < n; i++) {
+		l[i] = r[i] = blocks.b[0][o];
+		o = (o + 1) % blocks.n;
 	}
 }
 
 static void
-noise_fill(jack_default_audio_sample_t *b1, jack_default_audio_sample_t *b2, int n)
+noise_fill(float *l, float *r, int n)
 {
-	static int ba = 0, bb = 1;
-	static int pos = 0;
+	static int i0 = 0, i1 = 0;
+	static int o0 = -1, o1 = 0;
+	int rv;
 
-	double a;
-	int i = 0;
+	if (o0 == -1) o0 = blocks.n / 2;
+
+	while (n) {
+		rv = block_fade(l, i0, i1, o0, o1, n);
+		memcpy(r, l, sizeof (*l) * rv);
 	
-	for (i = 0; i < n; i++) {
-		if (pos++ >= BLOCK_SMP) {
-			ba = bb;
-			bb = random() % BLOCK_N;
-			pos = 0;
+		o0 += rv;
+		o1 += rv;
+		n -= rv;
+
+		if (o0 >= blocks.m) {
+			o0 = 0;
+			i0 = random() % blocks.m;
 		}
-		a = ((double) pos++) / BLOCK_SMP;
-		
-		b1[i] = sin(a * 0.00001) * block[ba][pos];
-		b1[i] = cos(a * 0.00001) * block[bb][pos];
-		b2[i] = b1[i];
+
+		if (o1 >= blocks.m) {
+			o1 = 0;
+			i1 = random() % blocks.m;
+		}
 	}
 }
 
@@ -103,24 +165,6 @@ calc_note_frqs(jack_default_audio_sample_t srate)
 		j = (jack_default_audio_sample_t) i;
 		note_frqs[i] = w * pow(2, (j - 9.0) / 12.0) / srate;
 	}
-}
-
-static int
-rng_fill(float *d, int n)
-{
-	static gsl_rng *r = NULL;
-	
-	int i;
-
-	if (r == NULL) {
-		gsl_rng_env_setup();
-		r = gsl_rng_alloc(gsl_rng_default);
-	}
-
-	for (i = 0; i < n; i++)
-	     d[i] = 0.1 * gsl_rng_uniform(r);
-
-	//gsl_rng_free(r);
 }
 
 static void
@@ -156,7 +200,7 @@ process_midi_events(jack_nframes_t nframes)
 }
 
 static int
-process(jack_nframes_t nframes, void *arg)
+process_callback(jack_nframes_t nframes, void *arg)
 {
 	int i, n;
 	void *mibuf;
@@ -169,36 +213,14 @@ process(jack_nframes_t nframes, void *arg)
 	out[1] = jack_port_get_buffer(out_ports[1], nframes);
 	n = jack_midi_get_event_count(mibuf);
 
-	/*
-	while (n-- > 0) {
-		jack_midi_event_get(&in_event, mibuf, 0);
-		
-		for(i = 0; i < nframes; i++) {
-			if ((in_event.time == i) && (event_index < event_count)) {
-				process_midi_event(&in_event);
-				event_index++;
-				if (event_index < n)
-					jack_midi_event_get(&in_event,
-					    mibuf, event_index);
-			}
-		ramp += note_frqs[note];
-		ramp = (ramp > 1.0) ? ramp - 2.0 : ramp;
-		out[0][i] = note_on * sin(2 * M_PI * ramp);
-		out[1][i] = note_on * sin(2 * M_PI * ramp);
-	}
-	*/
-	//rng_fill(out[0], nframes);
-	//rng_fill(out[1], nframes);
+	//blockone_fill(out[0], out[1], nframes);
 	noise_fill(out[0], out[1], nframes);
-	/* for (i = 0; i < nframes; i++) { */
-	/* 	out[0][i] = 0.01 * sin(i); */
-	/* 	out[1][i] = 0.01 * sin(i); */
-	/* } */
+
 	return 0;
 }
 
 static int
-srate(jack_nframes_t nframes, void *arg)
+srate_callback(jack_nframes_t nframes, void *arg)
 {
 	printf("the sample rate is now %" PRIu32 "/sec\n", nframes);
 	calc_note_frqs((jack_default_audio_sample_t) nframes);
@@ -206,7 +228,7 @@ srate(jack_nframes_t nframes, void *arg)
 }
 
 static void
-jack_shutdown(void *arg)
+shutdown_callback(void *arg)
 {
 	errx(1, "JACK shut down, exiting ...\n");
 }
@@ -218,12 +240,12 @@ main(int narg, char **args)
 	if (client == 0)
 		errx(1, "JACK server not running?\n");
 
-	calc_note_frqs(jack_get_sample_rate (client));
-	generate_blocks();
+	calc_note_frqs(jack_get_sample_rate(client));
+	blocks = create_blocks(BlockCount, BlockSampleCount);
 	
-	jack_set_process_callback(client, process, 0);
-	jack_set_sample_rate_callback(client, srate, 0);
-	jack_on_shutdown(client, jack_shutdown, 0);
+	jack_set_process_callback(client, process_callback, 0);
+	jack_set_sample_rate_callback(client, srate_callback, 0);
+	jack_on_shutdown(client, shutdown_callback, 0);
 
 	in_port = jack_port_register(client, "midi_in",
 	    JACK_DEFAULT_MIDI_TYPE,
