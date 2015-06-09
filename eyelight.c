@@ -21,6 +21,8 @@ jack_default_audio_sample_t note_on;
 unsigned char note = 0;
 jack_default_audio_sample_t note_frqs[128];
 
+int sample_rate = 0;
+
 jack_client_t *client;
 
 enum {
@@ -47,10 +49,10 @@ fill_random(float *b, int n)
 {
 	static gsl_rng *r = NULL;
 	int i;
-	float rf;
 	double *d = NULL;
-	
-	if (r == NULL) {
+	double f1, f2;
+
+	if (!r) {
 		gsl_rng_env_setup();
 		r = gsl_rng_alloc(gsl_rng_default);
 	}
@@ -60,11 +62,28 @@ fill_random(float *b, int n)
 
 	for (i = 0; i < n; i++)
 		d[i] = 2 * (gsl_rng_uniform(r) - 0.5);
-	//rf = gsl_rng_uniform(r);
-	//for (i = 0; i < n; i++)
-	//	b[i] = sinf((440.0 + rf * 2000 - 1000) * M_PI * 2 * i / n);
+
+	gsl_fft_real_radix2_transform (d, 1, n);
 	
+	//tc = 1 / (freq_3db * 2 * pi)
+	sample_rate = 48000;
+	for (i = 0; i < n / 2; i++) {
+		f1 = sample_rate * i / n / 4400.0;
+		f2 = sample_rate * i / n / 4400.0;
+		d[n - 1 - i] *= 1 / sqrt(1 + f2 * f2 * f2 * f2 * f2 * f2);
+		d[i] *= 1 / sqrt(1 + f2 * f2 * f2 * f2 * f2 * f2);
+		d[n - 1 - i] *= 1 / sqrt(1 / (f1 * f1 * f1 * f1 * f1 * f1) + 1);
+		d[i] *= 1 / sqrt(1 / (f1 * f1 * f1 * f1 * f1 * f1) + 1);
+	}
 	gsl_fft_halfcomplex_radix2_inverse (d, 1, n);
+
+	//for (i = 0; i < n; i++)
+	//d[i] = 2 * sin((480000 / 480.0) * M_PI * 2 * i / n);
+	/* printf("["); */
+	/* for (i = 0; i < n; i++) */
+	/* 	printf("%f, ", d[i]); */
+	/* printf("]\n"); */
+	/* exit(0); */
 
 	for (i = 0; i < n; i++)
 		b[i] = d[i];
@@ -222,6 +241,7 @@ process_callback(jack_nframes_t nframes, void *arg)
 static int
 srate_callback(jack_nframes_t nframes, void *arg)
 {
+	sample_rate = nframes;
 	printf("the sample rate is now %" PRIu32 "/sec\n", nframes);
 	calc_note_frqs((jack_default_audio_sample_t) nframes);
 	return 0;
