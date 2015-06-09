@@ -5,8 +5,14 @@
    <plug>audio_l</plug>
    <plug>audio_r</plug>
   </socket>
+  <socket exclusive="off" client="a2j_bridge" type="jack-midi" name="Output Socket 2">
+   <plug>capture</plug>
+  </socket>
  </output-sockets>
  <input-sockets>
+  <socket exclusive="off" client="eyelight" type="jack-midi" name="Input Socket 4">
+   <plug>midi_in</plug>
+  </socket>
   <socket exclusive="off" client="japa" type="jack-audio" name="Input Socket 1">
    <plug>in_1</plug>
    <plug>in_2</plug>
@@ -24,6 +30,7 @@
   <cable output="Output Socket 1" input="Input Socket 1" type="jack-audio"/>
   <cable output="Output Socket 1" input="Input Socket 2" type="jack-audio"/>
   <cable output="Output Socket 1" input="Input Socket 3" type="jack-audio"/>
+  <cable output="Output Socket 2" input="Input Socket 4" type="jack-midi"/>
  </cables>
 </patchbay>
 

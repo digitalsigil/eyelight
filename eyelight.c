@@ -26,8 +26,8 @@ int sample_rate = 0;
 jack_client_t *client;
 
 enum {
-	BlockSampleCount = 1 << 10,
-	BlockCount = 100
+	BlockSampleCount = 1 << 12,
+	BlockCount = 10
 };
 
 struct blocks {
@@ -45,7 +45,7 @@ signal_handler(int sig)
 }
 
 static void
-fill_random(float *b, int n)
+fill_random(float *b, int n, float fc)
 {
 	static gsl_rng *r = NULL;
 	int i;
@@ -68,12 +68,12 @@ fill_random(float *b, int n)
 	//tc = 1 / (freq_3db * 2 * pi)
 	sample_rate = 48000;
 	for (i = 0; i < n / 2; i++) {
-		f1 = sample_rate * i / n / 4400.0;
-		f2 = sample_rate * i / n / 4400.0;
-		d[n - 1 - i] *= 1 / sqrt(1 + f2 * f2 * f2 * f2 * f2 * f2);
-		d[i] *= 1 / sqrt(1 + f2 * f2 * f2 * f2 * f2 * f2);
-		d[n - 1 - i] *= 1 / sqrt(1 / (f1 * f1 * f1 * f1 * f1 * f1) + 1);
-		d[i] *= 1 / sqrt(1 / (f1 * f1 * f1 * f1 * f1 * f1) + 1);
+		f1 = sample_rate * i / n / fc;
+		f2 = sample_rate * i / n / fc;
+		d[n - 1 - i] *= 1 / sqrt(1 + pow(f2, 6));
+		d[i] *= 1 / sqrt(1 + pow(f2, 6));
+		d[n - 1 - i] *= 1 / sqrt(pow(f1, -6) + 1);
+		d[i] *= 1 / sqrt(pow(f1, -6) + 1);
 	}
 	gsl_fft_halfcomplex_radix2_inverse (d, 1, n);
 
@@ -105,7 +105,7 @@ create_blocks(int m, int n)
 	for (i = 0; i < m; i++) {
 		b.b[i] = malloc(sizeof (**b.b) * n);
 		if (b.b[i] == NULL) errx(1, "malloc");
-		fill_random(b.b[i], n);
+		fill_random(b.b[i], n, 0);
 	}
 
 	return b;
@@ -146,7 +146,9 @@ blockone_fill(float *l, float *r, int n)
 static void
 noise_fill(float *l, float *r, int n)
 {
-	static int i0 = 0, i1 = 0;
+
+	static float freq = 0;
+	static int i0 = 1, i1 = 0;
 	static int o0 = -1, o1 = 0;
 	int rv;
 
@@ -162,12 +164,13 @@ noise_fill(float *l, float *r, int n)
 
 		if (o0 >= blocks.m) {
 			o0 = 0;
-			i0 = random() % blocks.m;
+			i0 = (i0 + 1) % blocks.m;
 		}
 
 		if (o1 >= blocks.m) {
 			o1 = 0;
-			i1 = random() % blocks.m;
+			fill_random(blocks.b[i1], blocks.n, note_frqs[note]);
+			i1 = (i1 + 1) % blocks.m;
 		}
 	}
 }
@@ -182,7 +185,8 @@ calc_note_frqs(jack_default_audio_sample_t srate)
 	w = 2.0 * 440.0 / 32.0;
 	for(i=0; i<128; i++) {
 		j = (jack_default_audio_sample_t) i;
-		note_frqs[i] = w * pow(2, (j - 9.0) / 12.0) / srate;
+		note_frqs[i] = 440.0 * pow(2, (j - 69) / 12.00);
+		//note_frqs[i] = w * pow(2, (j - 9.0) / 12.0) / srate;
 	}
 }
 
@@ -205,6 +209,7 @@ process_midi_event(jack_midi_event_t *me)
 		note_on = 0.0;
 		break;
 	}
+	printf("%d %f\n", note, note_frqs[note]);
 }
 
 static void
@@ -212,29 +217,38 @@ process_midi_events(jack_nframes_t nframes)
 {
 	int i, n;
 	void *mibuf;
+	jack_midi_event_t in_event;
+	jack_nframes_t event_index = 0;
 
 	mibuf = jack_port_get_buffer(in_port, nframes);
 	n = jack_midi_get_event_count(mibuf);
+
+	while (n-- > 0) {
+		jack_midi_event_get(&in_event, mibuf, 0);
+		process_midi_event(&in_event);
+	}
+}
+
+static void
+fill_output_buffers(jack_nframes_t nframes)
+{
+	jack_default_audio_sample_t *out[2];
+	
+	out[0] = jack_port_get_buffer(out_ports[0], nframes);
+	out[1] = jack_port_get_buffer(out_ports[1], nframes);
+	
+	noise_fill(out[0], out[1], nframes);
+
+	return 0;
 
 }
 
 static int
 process_callback(jack_nframes_t nframes, void *arg)
 {
-	int i, n;
-	void *mibuf;
-	jack_default_audio_sample_t *out[2];
-	jack_midi_event_t in_event;
-	jack_nframes_t event_index = 0;
-
-	mibuf = jack_port_get_buffer(in_port, nframes);
-	out[0] = jack_port_get_buffer(out_ports[0], nframes);
-	out[1] = jack_port_get_buffer(out_ports[1], nframes);
-	n = jack_midi_get_event_count(mibuf);
-
-	//blockone_fill(out[0], out[1], nframes);
-	noise_fill(out[0], out[1], nframes);
-
+	process_midi_events(nframes);
+	fill_output_buffers(nframes);
+	
 	return 0;
 }
 
